@@ -1,5 +1,6 @@
-fastapi
-  uvicorn                                                                                                                                      
-  anthropic       
-  twilio   
+fastapi==0.111.0                                                                                                                             
+  uvicorn==0.29.0 
+  anthropic
+  twilio                                                                                                                                       
   python-multipart
+  h11==0.14.0    
