@@ -1,22 +1,22 @@
-from fastapi import FastAPI, Form                                                                                                            
+ from fastapi import FastAPI, Form                                                                                                            
   from fastapi.responses import PlainTextResponse                                                                                              
-  import anthropic                                                                                                                             
+  import anthropic
   import os                                                                                                                                    
   from twilio.twiml.messaging_response import MessagingResponse
                                                                                                                                                
-  app = FastAPI()                                                                                                                              
-  client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-  conversations = {}                                                                                                                           
-                  
+  app = FastAPI()
+  client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])                                                                        
+  conversations = {}
+
   @app.post("/webhook")                                                                                                                        
   async def webhook(From: str = Form(...), Body: str = Form(...)):
       if From not in conversations:                                                                                                            
           conversations[From] = []
       conversations[From].append({"role": "user", "content": Body})
-      if len(conversations[From]) > 20:                                                                                                        
-          conversations[From] = conversations[From][-20:]
-      response = client.messages.create(                                                                                                       
-          model="claude-sonnet-4-6",
+      if len(conversations[From]) > 20:
+          conversations[From] = conversations[From][-20:]                                                                                      
+      response = client.messages.create(
+          model="claude-sonnet-4-6",                                                                                                           
           max_tokens=1024,                                                                                                                     
           system="אתה סוכן אישי מועיל. ענה בקצרה.",
           messages=conversations[From]                                                                                                         
