@@ -4,6 +4,6 @@ anthropic
 twilio
 python-multipart
 h11==0.14.0
-duckduckgo-search
+tavily-python
 apscheduler
 pytz

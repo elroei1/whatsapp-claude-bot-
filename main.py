@@ -5,7 +5,7 @@ import os
 from datetime import datetime
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client as TwilioClient
-from duckduckgo_search import DDGS
+from tavily import TavilyClient
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.date import DateTrigger
 import pytz
@@ -70,13 +70,14 @@ tools = [
 
 def search_web(query: str) -> str:
     try:
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=5))
+        tavily = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
+        response = tavily.search(query=query, max_results=5)
+        results = response.get("results", [])
         if not results:
             return "לא נמצאו תוצאות."
         parts = []
         for r in results[:4]:
-            parts.append(f"• {r['title']}\n{r['body'][:200]}")
+            parts.append(f"• {r['title']}\n{r['content'][:250]}")
         return "\n\n".join(parts)
     except Exception as e:
         return f"שגיאה בחיפוש: {str(e)}"
