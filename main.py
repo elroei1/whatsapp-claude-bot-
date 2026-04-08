@@ -20,9 +20,6 @@ from googleapiclient.discovery import build
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
-import spotipy
-from spotipy.oauth2 import SpotifyOAuth
-
 app = FastAPI()
 client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 twilio_client = TwilioClient(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
@@ -634,23 +631,31 @@ async def webhook(
         except Exception as e:
             user_content = f"שגיאה בטעינת הקובץ: {str(e)}"
     else:
-        user_content = Body
+        user_content = Body or "שלום"  # fallback for empty body
 
-    conversations[From].append({"role": "user", "content": user_content})
+    # Store only text in history (images/PDFs are too large to keep)
+    if isinstance(user_content, list):
+        text_for_history = next((b["text"] for b in user_content if b.get("type") == "text"), "[מדיה]")
+        conversations[From].append({"role": "user", "content": text_for_history})
+    else:
+        conversations[From].append({"role": "user", "content": user_content})
+
     if len(conversations[From]) > 20:
         conversations[From] = conversations[From][-20:]
 
-    # Build messages list — skip non-string history entries for simplicity
-    messages = []
-    for m in conversations[From]:
-        c = m.get("content")
-        if isinstance(c, str):
-            messages.append({"role": m["role"], "content": c})
-        elif isinstance(c, list):
-            messages.append({"role": m["role"], "content": c})
+    # Build messages — history (text only) + current message (may include media)
+    history = [{"role": m["role"], "content": m["content"]}
+               for m in conversations[From][:-1]
+               if isinstance(m.get("content"), str) and m.get("content")]
+
+    # Ensure alternating roles (API requirement): drop leading assistant messages
+    while history and history[0]["role"] == "assistant":
+        history.pop(0)
+
+    messages = history + [{"role": "user", "content": user_content}]
 
     reply = ""
-    max_iterations = 6
+    max_iterations = 4
     iterations = 0
     try:
         while iterations < max_iterations:
