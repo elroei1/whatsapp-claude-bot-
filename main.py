@@ -17,6 +17,8 @@ from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
+import spotipy
+from spotipy.oauth2 import SpotifyOAuth
 
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
