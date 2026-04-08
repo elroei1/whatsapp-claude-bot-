@@ -36,8 +36,8 @@ _oauth_flow = None
 
 # ── Google Calendar helpers ──────────────────────────────────────────────────
 
-def get_google_creds() -> Credentials | None:
-    """Load credentials from token.json or GOOGLE_REFRESH_TOKEN env var."""
+def get_google_creds():
+    """Load credentials. Returns (creds, error_str)."""
     refresh_token = None
 
     if os.path.exists(TOKEN_FILE):
@@ -49,19 +49,21 @@ def get_google_creds() -> Credentials | None:
         refresh_token = os.environ.get("GOOGLE_REFRESH_TOKEN")
 
     if not refresh_token:
-        return None
+        return None, "GOOGLE_REFRESH_TOKEN חסר"
 
-    creds = Credentials(
-        token=None,
-        refresh_token=refresh_token,
-        token_uri="https://oauth2.googleapis.com/token",
-        client_id=os.environ["GOOGLE_CLIENT_ID"],
-        client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
-        scopes=SCOPES,
-    )
-
-    creds.refresh(Request())
-    return creds
+    try:
+        creds = Credentials(
+            token=None,
+            refresh_token=refresh_token,
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=os.environ["GOOGLE_CLIENT_ID"],
+            client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
+            scopes=SCOPES,
+        )
+        creds.refresh(Request())
+        return creds, None
+    except Exception as e:
+        return None, str(e)
 
 
 def _save_creds(creds: Credentials):
@@ -74,10 +76,10 @@ def _save_creds(creds: Credentials):
 
 
 def get_calendar_service():
-    creds = get_google_creds()
+    creds, err = get_google_creds()
     if not creds:
-        return None
-    return build("calendar", "v3", credentials=creds)
+        return None, err
+    return build("calendar", "v3", credentials=creds), None
 
 
 # ── OAuth endpoints ──────────────────────────────────────────────────────────
@@ -125,9 +127,9 @@ async def auth_callback(code: str):
 # ── Calendar tools ───────────────────────────────────────────────────────────
 
 def list_calendar_events(days: int = 7) -> str:
-    service = get_calendar_service()
+    service, err = get_calendar_service()
     if not service:
-        return "יומן גוגל לא מחובר. בקר ב: https://web-production-d9ba5e.up.railway.app/auth/google"
+        return f"יומן גוגל לא מחובר ({err}). בקר ב: https://web-production-d9ba5e.up.railway.app/auth/google"
 
     now = datetime.now(ISRAEL_TZ)
     time_min = now.isoformat()
@@ -160,9 +162,9 @@ def list_calendar_events(days: int = 7) -> str:
 
 
 def create_calendar_event(summary: str, start_datetime: str, end_datetime: str, description: str = "") -> str:
-    service = get_calendar_service()
+    service, err = get_calendar_service()
     if not service:
-        return "יומן גוגל לא מחובר. בקר ב: https://web-production-d9ba5e.up.railway.app/auth/google"
+        return f"יומן גוגל לא מחובר ({err}). בקר ב: https://web-production-d9ba5e.up.railway.app/auth/google"
 
     def parse_dt(s):
         dt = datetime.fromisoformat(s)
