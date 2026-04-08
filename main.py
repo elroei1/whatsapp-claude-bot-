@@ -18,6 +18,9 @@ from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 
+import spotipy
+from spotipy.oauth2 import SpotifyOAuth
+
 app = FastAPI()
 client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 twilio_client = TwilioClient(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
@@ -82,6 +85,90 @@ def get_calendar_service():
     return build("calendar", "v3", credentials=creds), None
 
 
+# ── Spotify helpers ──────────────────────────────────────────────────────────
+
+SPOTIFY_REDIRECT_URI = "https://web-production-d9ba5e.up.railway.app/auth/spotify/callback"
+SPOTIFY_SCOPES = "user-read-playback-state user-modify-playback-state user-read-currently-playing"
+
+
+def get_spotify():
+    """Return an authenticated Spotify client or None."""
+    refresh_token = os.environ.get("SPOTIFY_REFRESH_TOKEN")
+    if not refresh_token:
+        return None, "SPOTIFY_REFRESH_TOKEN חסר"
+    try:
+        auth = SpotifyOAuth(
+            client_id=os.environ["SPOTIFY_CLIENT_ID"],
+            client_secret=os.environ["SPOTIFY_CLIENT_SECRET"],
+            redirect_uri=SPOTIFY_REDIRECT_URI,
+            scope=SPOTIFY_SCOPES,
+        )
+        token_info = auth.refresh_access_token(refresh_token)
+        return spotipy.Spotify(auth=token_info["access_token"]), None
+    except Exception as e:
+        return None, str(e)
+
+
+def spotify_currently_playing_fn() -> str:
+    sp, err = get_spotify()
+    if not sp:
+        return f"ספוטיפיי לא מחובר ({err}). בקר ב: https://web-production-d9ba5e.up.railway.app/auth/spotify"
+    try:
+        current = sp.current_playback()
+        if not current or not current.get("is_playing"):
+            return "לא מתנגן כלום כרגע בספוטיפיי."
+        item = current["item"]
+        artists = ", ".join(a["name"] for a in item["artists"])
+        track = item["name"]
+        return f"מתנגן עכשיו: {track} — {artists}"
+    except Exception as e:
+        return f"שגיאה: {str(e)}"
+
+
+def spotify_control_fn(action: str) -> str:
+    sp, err = get_spotify()
+    if not sp:
+        return f"ספוטיפיי לא מחובר ({err}). בקר ב: https://web-production-d9ba5e.up.railway.app/auth/spotify"
+    try:
+        if action == "pause":
+            sp.pause_playback()
+            return "מושהה ⏸"
+        elif action == "play":
+            sp.start_playback()
+            return "מתנגן ▶️"
+        elif action == "next":
+            sp.next_track()
+            return "דילגתי לשיר הבא ⏭"
+        elif action == "previous":
+            sp.previous_track()
+            return "חזרתי לשיר הקודם ⏮"
+        else:
+            return f"פעולה לא מוכרת: {action}"
+    except Exception as e:
+        return f"שגיאה: {str(e)}"
+
+
+def spotify_search_and_play_fn(query: str, type: str = "track") -> str:
+    sp, err = get_spotify()
+    if not sp:
+        return f"ספוטיפיי לא מחובר ({err}). בקר ב: https://web-production-d9ba5e.up.railway.app/auth/spotify"
+    try:
+        results = sp.search(q=query, type=type, limit=1)
+        items = results[f"{type}s"]["items"]
+        if not items:
+            return f"לא מצאתי {query} בספוטיפיי."
+        item = items[0]
+        uri = item["uri"]
+        name = item["name"]
+        if type == "track":
+            sp.start_playback(uris=[uri])
+        else:
+            sp.start_playback(context_uri=uri)
+        return f"מנגן: {name} ▶️"
+    except Exception as e:
+        return f"שגיאה: {str(e)}"
+
+
 # ── OAuth endpoints ──────────────────────────────────────────────────────────
 
 @app.get("/auth/google")
@@ -121,6 +208,38 @@ async def auth_callback(code: str):
     <p><b>ערך:</b></p>
     <pre style="background:#f0f0f0;padding:10px;word-break:break-all">{refresh_token}</pre>
     <p>העתק את הערך הזה ושמור אותו.</p>
+    """)
+
+
+# ── Spotify OAuth endpoints ──────────────────────────────────────────────────
+
+@app.get("/auth/spotify")
+async def auth_spotify():
+    auth = SpotifyOAuth(
+        client_id=os.environ["SPOTIFY_CLIENT_ID"],
+        client_secret=os.environ["SPOTIFY_CLIENT_SECRET"],
+        redirect_uri=SPOTIFY_REDIRECT_URI,
+        scope=SPOTIFY_SCOPES,
+    )
+    return RedirectResponse(auth.get_authorize_url())
+
+
+@app.get("/auth/spotify/callback")
+async def auth_spotify_callback(code: str):
+    auth = SpotifyOAuth(
+        client_id=os.environ["SPOTIFY_CLIENT_ID"],
+        client_secret=os.environ["SPOTIFY_CLIENT_SECRET"],
+        redirect_uri=SPOTIFY_REDIRECT_URI,
+        scope=SPOTIFY_SCOPES,
+    )
+    token_info = auth.get_access_token(code, as_dict=True)
+    refresh_token = token_info["refresh_token"]
+    return HTMLResponse(f"""
+    <h2>✅ ספוטיפיי חובר בהצלחה!</h2>
+    <p>הוסף ב-Railway את ה-env var הבא:</p>
+    <p><b>שם:</b> SPOTIFY_REFRESH_TOKEN</p>
+    <p><b>ערך:</b></p>
+    <pre style="background:#f0f0f0;padding:10px;word-break:break-all">{refresh_token}</pre>
     """)
 
 
@@ -262,6 +381,42 @@ tools = [
             },
             "required": ["summary", "start_datetime", "end_datetime"]
         }
+    },
+    {
+        "name": "spotify_currently_playing",
+        "description": "מה מתנגן עכשיו בספוטיפיי.",
+        "input_schema": {"type": "object", "properties": {}, "required": []}
+    },
+    {
+        "name": "spotify_control",
+        "description": "שליטה על ניגון ספוטיפיי: השהייה, המשך, דילוג קדימה/אחורה.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["play", "pause", "next", "previous"],
+                    "description": "הפעולה"
+                }
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "spotify_search_and_play",
+        "description": "חיפוש שיר, אמן, או פלייליסט בספוטיפיי והשמעתו.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "שם השיר / האמן / הפלייליסט"},
+                "type": {
+                    "type": "string",
+                    "enum": ["track", "artist", "playlist", "album"],
+                    "description": "סוג החיפוש (ברירת מחדל: track)"
+                }
+            },
+            "required": ["query"]
+        }
     }
 ]
 
@@ -350,6 +505,12 @@ def run_tool(name: str, inp: dict, user_phone: str) -> str:
         return create_calendar_event(
             inp["summary"], inp["start_datetime"], inp["end_datetime"], inp.get("description", "")
         )
+    elif name == "spotify_currently_playing":
+        return spotify_currently_playing_fn()
+    elif name == "spotify_control":
+        return spotify_control_fn(inp["action"])
+    elif name == "spotify_search_and_play":
+        return spotify_search_and_play_fn(inp["query"], inp.get("type", "track"))
     return "כלי לא מוכר"
 
 
@@ -390,7 +551,8 @@ async def webhook(
     system_prompt = (
         f"אתה סוכן אישי של אלרואי מאיר. ענה תמיד בעברית, בקצרה ולעניין. "
         f"יש לך כלים: חיפוש אינטרנט, תזכורות, ניהול משימות, יומן גוגל (צפייה ויצירת אירועים). "
-        f"אתה יכול לראות תמונות ולקרוא קבצי PDF שהמשתמש שולח. "
+        f"אתה יכול לראות תמונות ולקרוא קבצי PDF. "
+        f"אתה יכול לשלוט על ספוטיפיי: לנגן, להשהות, לדלג, ולחפש שירים. "
         f"השעה עכשיו: {now} (ישראל)."
     )
 
