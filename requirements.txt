@@ -7,3 +7,6 @@ h11==0.14.0
 tavily-python
 apscheduler
 pytz
+google-api-python-client
+google-auth-oauthlib
+google-auth-httplib2
