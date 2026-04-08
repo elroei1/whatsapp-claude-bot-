@@ -29,6 +29,7 @@ TOKEN_FILE = "token.json"
 
 conversations = {}
 user_tasks = {}
+_oauth_flow = None
 
 
 # ── Google Calendar helpers ──────────────────────────────────────────────────
@@ -82,7 +83,8 @@ def get_calendar_service():
 
 @app.get("/auth/google")
 async def auth_google():
-    flow = Flow.from_client_config(
+    global _oauth_flow
+    _oauth_flow = Flow.from_client_config(
         {
             "web": {
                 "client_id": os.environ["GOOGLE_CLIENT_ID"],
@@ -95,31 +97,21 @@ async def auth_google():
         scopes=SCOPES,
         redirect_uri=REDIRECT_URI,
     )
-    auth_url, _ = flow.authorization_url(access_type="offline", prompt="consent")
+    auth_url, _ = _oauth_flow.authorization_url(access_type="offline", prompt="consent")
     return RedirectResponse(auth_url)
 
 
 @app.get("/auth/callback")
 async def auth_callback(code: str):
-    flow = Flow.from_client_config(
-        {
-            "web": {
-                "client_id": os.environ["GOOGLE_CLIENT_ID"],
-                "client_secret": os.environ["GOOGLE_CLIENT_SECRET"],
-                "redirect_uris": [REDIRECT_URI],
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token",
-            }
-        },
-        scopes=SCOPES,
-        redirect_uri=REDIRECT_URI,
-    )
-    flow.fetch_token(code=code)
-    _save_creds(flow.credentials)
+    global _oauth_flow
+    if not _oauth_flow:
+        return HTMLResponse("שגיאה: התחל מחדש מ- /auth/google")
+    _oauth_flow.fetch_token(code=code)
+    _save_creds(_oauth_flow.credentials)
 
     token_json = json.dumps({
-        "token": flow.credentials.token,
-        "refresh_token": flow.credentials.refresh_token,
+        "token": _oauth_flow.credentials.token,
+        "refresh_token": _oauth_flow.credentials.refresh_token,
     })
 
     return HTMLResponse(f"""
