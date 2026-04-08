@@ -654,8 +654,9 @@ async def webhook(
 
     messages = history + [{"role": "user", "content": user_content}]
 
-    print(f"[WEBHOOK] user={user_phone} body={repr(Body[:50])} media={NumMedia}")
-    print(f"[WEBHOOK] messages count={len(messages)}")
+    import sys
+    print(f"[WEBHOOK] user={user_phone} body={repr(Body[:50])} media={NumMedia}", file=sys.stderr, flush=True)
+    print(f"[WEBHOOK] messages count={len(messages)}", file=sys.stderr, flush=True)
 
     reply = ""
     max_iterations = 4
@@ -663,7 +664,7 @@ async def webhook(
     try:
         while iterations < max_iterations:
             iterations += 1
-            print(f"[CLAUDE] iteration {iterations}, messages={len(messages)}")
+            print(f"[CLAUDE] iteration {iterations}, messages={len(messages)}", file=sys.stderr, flush=True)
             response = client.messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=1024,
@@ -671,7 +672,7 @@ async def webhook(
                 tools=tools,
                 messages=messages
             )
-            print(f"[CLAUDE] stop_reason={response.stop_reason}")
+            print(f"[CLAUDE] stop_reason={response.stop_reason}", file=sys.stderr, flush=True)
 
             if response.stop_reason == "end_turn":
                 reply = next((b.text for b in response.content if hasattr(b, "text")), "")
@@ -682,9 +683,9 @@ async def webhook(
                 tool_results = []
                 for block in response.content:
                     if block.type == "tool_use":
-                        print(f"[TOOL] calling {block.name}")
+                        print(f"[TOOL] calling {block.name}", file=sys.stderr, flush=True)
                         result = run_tool(block.name, block.input, user_phone)
-                        print(f"[TOOL] result={repr(result[:80])}")
+                        print(f"[TOOL] result={repr(result[:80])}", file=sys.stderr, flush=True)
                         tool_results.append({
                             "type": "tool_result",
                             "tool_use_id": block.id,
@@ -695,10 +696,10 @@ async def webhook(
                 break
     except Exception as e:
         import traceback
-        print(f"[ERROR] {traceback.format_exc()}")
+        print(f"[ERROR] {traceback.format_exc()}", file=sys.stderr, flush=True)
         reply = f"שגיאה: {str(e)}"
 
-    print(f"[REPLY] {repr(reply[:100])}")
+    print(f"[REPLY] {repr(reply[:100])}", file=sys.stderr, flush=True)
     if not reply:
         reply = "מצטער, משהו השתבש. נסה שוב."
 
