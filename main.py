@@ -650,34 +650,42 @@ async def webhook(
             messages.append({"role": m["role"], "content": c})
 
     reply = ""
-    while True:
-        response = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=1024,
-            system=system_prompt,
-            tools=tools,
-            messages=messages
-        )
+    max_iterations = 6
+    iterations = 0
+    try:
+        while iterations < max_iterations:
+            iterations += 1
+            response = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=1024,
+                system=system_prompt,
+                tools=tools,
+                messages=messages
+            )
 
-        if response.stop_reason == "end_turn":
-            reply = next((b.text for b in response.content if hasattr(b, "text")), "")
-            break
+            if response.stop_reason == "end_turn":
+                reply = next((b.text for b in response.content if hasattr(b, "text")), "")
+                break
 
-        if response.stop_reason == "tool_use":
-            messages.append({"role": "assistant", "content": response.content})
-            tool_results = []
-            for block in response.content:
-                if block.type == "tool_use":
-                    result = run_tool(block.name, block.input, user_phone)
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": result
-                    })
-            messages.append({"role": "user", "content": tool_results})
-        else:
-            reply = "שגיאה לא צפויה"
-            break
+            if response.stop_reason == "tool_use":
+                messages.append({"role": "assistant", "content": response.content})
+                tool_results = []
+                for block in response.content:
+                    if block.type == "tool_use":
+                        result = run_tool(block.name, block.input, user_phone)
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": result
+                        })
+                messages.append({"role": "user", "content": tool_results})
+            else:
+                break
+    except Exception as e:
+        reply = f"שגיאה: {str(e)}"
+
+    if not reply:
+        reply = "מצטער, משהו השתבש. נסה שוב."
 
     conversations[From].append({"role": "assistant", "content": reply})
 
