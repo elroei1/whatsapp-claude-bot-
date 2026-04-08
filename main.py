@@ -654,12 +654,16 @@ async def webhook(
 
     messages = history + [{"role": "user", "content": user_content}]
 
+    print(f"[WEBHOOK] user={user_phone} body={repr(Body[:50])} media={NumMedia}")
+    print(f"[WEBHOOK] messages count={len(messages)}")
+
     reply = ""
     max_iterations = 4
     iterations = 0
     try:
         while iterations < max_iterations:
             iterations += 1
+            print(f"[CLAUDE] iteration {iterations}, messages={len(messages)}")
             response = client.messages.create(
                 model="claude-sonnet-4-6",
                 max_tokens=1024,
@@ -667,6 +671,7 @@ async def webhook(
                 tools=tools,
                 messages=messages
             )
+            print(f"[CLAUDE] stop_reason={response.stop_reason}")
 
             if response.stop_reason == "end_turn":
                 reply = next((b.text for b in response.content if hasattr(b, "text")), "")
@@ -677,7 +682,9 @@ async def webhook(
                 tool_results = []
                 for block in response.content:
                     if block.type == "tool_use":
+                        print(f"[TOOL] calling {block.name}")
                         result = run_tool(block.name, block.input, user_phone)
+                        print(f"[TOOL] result={repr(result[:80])}")
                         tool_results.append({
                             "type": "tool_result",
                             "tool_use_id": block.id,
@@ -687,8 +694,11 @@ async def webhook(
             else:
                 break
     except Exception as e:
+        import traceback
+        print(f"[ERROR] {traceback.format_exc()}")
         reply = f"שגיאה: {str(e)}"
 
+    print(f"[REPLY] {repr(reply[:100])}")
     if not reply:
         reply = "מצטער, משהו השתבש. נסה שוב."
 
