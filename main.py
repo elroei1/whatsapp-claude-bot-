@@ -390,23 +390,42 @@ async def webhook(
     system_prompt = (
         f"אתה סוכן אישי של אלרואי מאיר. ענה תמיד בעברית, בקצרה ולעניין. "
         f"יש לך כלים: חיפוש אינטרנט, תזכורות, ניהול משימות, יומן גוגל (צפייה ויצירת אירועים). "
-        f"אתה גם יכול לראות ולנתח תמונות שהמשתמש שולח. "
+        f"אתה יכול לראות תמונות ולקרוא קבצי PDF שהמשתמש שולח. "
         f"השעה עכשיו: {now} (ישראל)."
     )
 
-    # Build user message content (text + optional image)
+    # Build user message content (text + optional media)
     if NumMedia > 0 and MediaUrl0:
         try:
-            img_data, img_type = await fetch_media_as_base64(MediaUrl0)
-            user_content = [
-                {
+            file_data, file_type = await fetch_media_as_base64(MediaUrl0)
+            user_text = Body if Body else None
+
+            if file_type.startswith("image/"):
+                media_block = {
                     "type": "image",
-                    "source": {"type": "base64", "media_type": img_type, "data": img_data},
-                },
-                {"type": "text", "text": Body if Body else "מה יש בתמונה?"},
-            ]
+                    "source": {"type": "base64", "media_type": file_type, "data": file_data},
+                }
+                default_text = "מה יש בתמונה?"
+            elif file_type == "application/pdf":
+                media_block = {
+                    "type": "document",
+                    "source": {"type": "base64", "media_type": "application/pdf", "data": file_data},
+                }
+                default_text = "תסכם את תוכן הקובץ."
+            else:
+                media_block = None
+                user_text = user_text or f"שלחת קובץ מסוג {file_type} — אני לא יכול לקרוא סוג קובץ זה כרגע."
+
+            if media_block:
+                user_content = [
+                    media_block,
+                    {"type": "text", "text": user_text or default_text},
+                ]
+            else:
+                user_content = user_text
+
         except Exception as e:
-            user_content = Body or "שלחת תמונה אך לא הצלחתי לטעון אותה."
+            user_content = f"שגיאה בטעינת הקובץ: {str(e)}"
     else:
         user_content = Body
 
