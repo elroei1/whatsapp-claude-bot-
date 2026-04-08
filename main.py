@@ -3,6 +3,8 @@ from fastapi.responses import PlainTextResponse, RedirectResponse, HTMLResponse
 import anthropic
 import os
 import json
+import base64
+import httpx
 from datetime import datetime, timedelta
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client as TwilioClient
@@ -365,27 +367,65 @@ async def startup():
 
 # ── Webhook ──────────────────────────────────────────────────────────────────
 
+async def fetch_media_as_base64(url: str) -> tuple[str, str]:
+    """Download Twilio media and return (base64_data, media_type)."""
+    auth = (os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
+    async with httpx.AsyncClient() as http:
+        resp = await http.get(url, auth=auth, follow_redirects=True)
+        resp.raise_for_status()
+        media_type = resp.headers.get("content-type", "image/jpeg").split(";")[0]
+        return base64.standard_b64encode(resp.content).decode(), media_type
+
+
 @app.post("/webhook")
-async def webhook(From: str = Form(...), Body: str = Form(...)):
+async def webhook(
+    From: str = Form(...),
+    Body: str = Form(""),
+    NumMedia: int = Form(0),
+    MediaUrl0: str = Form(None),
+    MediaContentType0: str = Form(None),
+):
     user_phone = From.replace("whatsapp:", "")
 
     if From not in conversations:
         conversations[From] = []
 
-    conversations[From].append({"role": "user", "content": Body})
-    if len(conversations[From]) > 20:
-        conversations[From] = conversations[From][-20:]
-
     now = datetime.now(ISRAEL_TZ).strftime("%d/%m/%Y %H:%M")
     system_prompt = (
         f"אתה סוכן אישי של אלרואי מאיר. ענה תמיד בעברית, בקצרה ולעניין. "
         f"יש לך כלים: חיפוש אינטרנט, תזכורות, ניהול משימות, יומן גוגל (צפייה ויצירת אירועים). "
+        f"אתה גם יכול לראות ולנתח תמונות שהמשתמש שולח. "
         f"השעה עכשיו: {now} (ישראל)."
     )
 
-    messages = [{"role": m["role"], "content": m["content"]}
-                for m in conversations[From]
-                if isinstance(m.get("content"), str)]
+    # Build user message content (text + optional image)
+    if NumMedia > 0 and MediaUrl0:
+        try:
+            img_data, img_type = await fetch_media_as_base64(MediaUrl0)
+            user_content = [
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": img_type, "data": img_data},
+                },
+                {"type": "text", "text": Body if Body else "מה יש בתמונה?"},
+            ]
+        except Exception as e:
+            user_content = Body or "שלחת תמונה אך לא הצלחתי לטעון אותה."
+    else:
+        user_content = Body
+
+    conversations[From].append({"role": "user", "content": user_content})
+    if len(conversations[From]) > 20:
+        conversations[From] = conversations[From][-20:]
+
+    # Build messages list — skip non-string history entries for simplicity
+    messages = []
+    for m in conversations[From]:
+        c = m.get("content")
+        if isinstance(c, str):
+            messages.append({"role": m["role"], "content": c})
+        elif isinstance(c, list):
+            messages.append({"role": m["role"], "content": c})
 
     reply = ""
     while True:
