@@ -37,31 +37,30 @@ _oauth_flow = None
 # ── Google Calendar helpers ──────────────────────────────────────────────────
 
 def get_google_creds() -> Credentials | None:
-    """Load credentials from token.json or GOOGLE_TOKEN env var."""
-    token_data = None
+    """Load credentials from token.json or GOOGLE_REFRESH_TOKEN env var."""
+    refresh_token = None
 
     if os.path.exists(TOKEN_FILE):
         with open(TOKEN_FILE) as f:
-            token_data = json.load(f)
-    elif os.environ.get("GOOGLE_TOKEN"):
-        token_data = json.loads(os.environ["GOOGLE_TOKEN"])
+            data = json.load(f)
+            refresh_token = data.get("refresh_token")
 
-    if not token_data:
+    if not refresh_token:
+        refresh_token = os.environ.get("GOOGLE_REFRESH_TOKEN")
+
+    if not refresh_token:
         return None
 
     creds = Credentials(
-        token=token_data.get("token"),
-        refresh_token=token_data.get("refresh_token"),
+        token=None,
+        refresh_token=refresh_token,
         token_uri="https://oauth2.googleapis.com/token",
         client_id=os.environ["GOOGLE_CLIENT_ID"],
         client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
         scopes=SCOPES,
     )
 
-    if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-        _save_creds(creds)
-
+    creds.refresh(Request())
     return creds
 
 
@@ -111,16 +110,14 @@ async def auth_callback(code: str):
     _oauth_flow.fetch_token(code=code)
     _save_creds(_oauth_flow.credentials)
 
-    token_json = json.dumps({
-        "token": _oauth_flow.credentials.token,
-        "refresh_token": _oauth_flow.credentials.refresh_token,
-    })
+    refresh_token = _oauth_flow.credentials.refresh_token
 
     return HTMLResponse(f"""
     <h2>✅ יומן גוגל חובר בהצלחה!</h2>
     <p>כדי שהחיבור יישמר גם אחרי deploy, הוסף ב-Railway את ה-env var הבא:</p>
-    <p><b>GOOGLE_TOKEN</b></p>
-    <pre style="background:#f0f0f0;padding:10px;word-break:break-all">{token_json}</pre>
+    <p><b>שם:</b> GOOGLE_REFRESH_TOKEN</p>
+    <p><b>ערך:</b></p>
+    <pre style="background:#f0f0f0;padding:10px;word-break:break-all">{refresh_token}</pre>
     <p>העתק את הערך הזה ושמור אותו.</p>
     """)
 
@@ -359,10 +356,7 @@ def run_tool(name: str, inp: dict, user_phone: str) -> str:
 @app.on_event("startup")
 async def startup():
     scheduler.start()
-    # If GOOGLE_TOKEN env var exists, write to file so get_google_creds() can load it
-    if os.environ.get("GOOGLE_TOKEN") and not os.path.exists(TOKEN_FILE):
-        with open(TOKEN_FILE, "w") as f:
-            f.write(os.environ["GOOGLE_TOKEN"])
+    pass  # startup: nothing extra needed
 
 
 # ── Webhook ──────────────────────────────────────────────────────────────────
