@@ -37,6 +37,7 @@ TOKEN_FILE = "token.json"
 conversations = {}
 user_tasks = {}
 _oauth_flow = None
+pending_spotify = {}  # user_phone -> list of {name, artist, uri}
 
 
 # ── Google Calendar helpers ──────────────────────────────────────────────────
@@ -150,23 +151,44 @@ def spotify_control_fn(action: str) -> str:
         return f"שגיאה: {str(e)}"
 
 
-def spotify_search_and_play_fn(query: str, type: str = "track") -> str:
+def spotify_search_and_play_fn(query: str, user_phone: str, type: str = "track") -> str:
     sp, err = get_spotify()
     if not sp:
         return f"ספוטיפיי לא מחובר ({err}). בקר ב: https://web-production-d9ba5e.up.railway.app/auth/spotify"
     try:
-        results = sp.search(q=query, type=type, limit=1)
+        results = sp.search(q=query, type=type, limit=5)
         items = results[f"{type}s"]["items"]
         if not items:
-            return f"לא מצאתי {query} בספוטיפיי."
-        item = items[0]
-        uri = item["uri"]
-        name = item["name"]
-        if type == "track":
-            sp.start_playback(uris=[uri])
-        else:
-            sp.start_playback(context_uri=uri)
-        return f"מנגן: {name} ▶️"
+            return f"לא מצאתי '{query}' בספוטיפיי."
+
+        if type != "track":
+            # For albums/playlists just play the first result
+            sp.start_playback(context_uri=items[0]["uri"])
+            return f"מנגן: {items[0]['name']} ▶️"
+
+        # Check for multiple distinct artists
+        seen_artists = []
+        unique_tracks = []
+        for t in items:
+            artist = t["artists"][0]["name"]
+            if artist not in seen_artists:
+                seen_artists.append(artist)
+                unique_tracks.append(t)
+
+        if len(unique_tracks) == 1:
+            sp.start_playback(uris=[unique_tracks[0]["uri"]])
+            return f"מנגן: {unique_tracks[0]['name']} — {unique_tracks[0]['artists'][0]['name']} ▶️"
+
+        # Multiple artists — ask user to choose
+        pending_spotify[user_phone] = [
+            {"name": t["name"], "artist": t["artists"][0]["name"], "uri": t["uri"]}
+            for t in unique_tracks[:5]
+        ]
+        lines = ["מצאתי כמה אמנים לשיר הזה, בחר מספר:"]
+        for i, t in enumerate(pending_spotify[user_phone], 1):
+            lines.append(f"{i}. {t['artist']} — {t['name']}")
+        return "\n".join(lines)
+
     except Exception as e:
         return f"שגיאה: {str(e)}"
 
@@ -512,7 +534,7 @@ def run_tool(name: str, inp: dict, user_phone: str) -> str:
     elif name == "spotify_control":
         return spotify_control_fn(inp["action"])
     elif name == "spotify_search_and_play":
-        return spotify_search_and_play_fn(inp["query"], inp.get("type", "track"))
+        return spotify_search_and_play_fn(inp["query"], user_phone, inp.get("type", "track"))
     return "כלי לא מוכר"
 
 
@@ -545,6 +567,27 @@ async def webhook(
     MediaContentType0: str = Form(None),
 ):
     user_phone = From.replace("whatsapp:", "")
+
+    # ── Spotify artist selection ──────────────────────────────────────────────
+    if user_phone in pending_spotify and Body.strip().isdigit():
+        idx = int(Body.strip()) - 1
+        options = pending_spotify[user_phone]
+        if 0 <= idx < len(options):
+            selected = options[idx]
+            del pending_spotify[user_phone]
+            sp, err = get_spotify()
+            if sp:
+                try:
+                    sp.start_playback(uris=[selected["uri"]])
+                    reply = f"מנגן: {selected['name']} — {selected['artist']} ▶️"
+                except Exception as e:
+                    reply = f"שגיאה בהפעלה: {str(e)}"
+            else:
+                reply = f"ספוטיפיי לא מחובר: {err}"
+            resp = MessagingResponse()
+            resp.message(reply)
+            return PlainTextResponse(str(resp), media_type="application/xml")
+    # ─────────────────────────────────────────────────────────────────────────
 
     if From not in conversations:
         conversations[From] = []
