@@ -36,6 +36,89 @@ user_tasks = {}
 _oauth_flow = None
 pending_spotify = {}  # user_phone -> list of {name, artist, uri}
 
+DATA_DIR = "/data"
+SCHEDULE_FILE = f"{DATA_DIR}/schedule.json"
+MY_WHATSAPP = os.environ.get("MY_WHATSAPP", "")
+DAY_NAMES = {0: "שני", 1: "שלישי", 2: "רביעי", 3: "חמישי", 4: "שישי", 5: "שבת", 6: "ראשון"}
+os.makedirs(DATA_DIR, exist_ok=True)
+
+
+def load_schedules():
+    if os.path.exists(SCHEDULE_FILE):
+        with open(SCHEDULE_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    return {"מערכת_שעות": "", "סידור_עבודה": ""}
+
+
+def save_schedules(data):
+    with open(SCHEDULE_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+async def send_morning_brief():
+    if not MY_WHATSAPP:
+        return
+
+    schedules = load_schedules()
+    today = datetime.now(ISRAEL_TZ)
+    day_name = DAY_NAMES[today.weekday()]
+    date_str = today.strftime("%d/%m/%Y")
+
+    cal_summary = ""
+    try:
+        service, _ = get_calendar_service()
+        if service:
+            time_min = today.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+            time_max = today.replace(hour=23, minute=59, second=59).isoformat()
+            result = service.events().list(
+                calendarId="primary",
+                timeMin=time_min,
+                timeMax=time_max,
+                singleEvents=True,
+                orderBy="startTime",
+                maxResults=20,
+            ).execute()
+            events = result.get("items", [])
+            if events:
+                lines = []
+                for e in events:
+                    start = e["start"].get("dateTime", e["start"].get("date", ""))
+                    if "T" in start:
+                        dt = datetime.fromisoformat(start).astimezone(ISRAEL_TZ)
+                        time_str = dt.strftime("%H:%M")
+                    else:
+                        time_str = "כל היום"
+                    lines.append(f"• {time_str} — {e.get('summary', 'ללא כותרת')}")
+                cal_summary = "אירועי יומן גוגל היום:\n" + "\n".join(lines)
+    except Exception:
+        pass
+
+    timetable = schedules.get("מערכת_שעות") or "לא הוגדרה"
+    work_schedule = schedules.get("סידור_עבודה") or "לא הוגדר"
+
+    prompt = (
+        f"היום יום {day_name}, {date_str}.\n\n"
+        f"מערכת השעות הקבועה שלי (לימודים/קורסים שחוזרים כל שבוע):\n{timetable}\n\n"
+        f"סידור עבודה לשבוע הנוכחי:\n{work_schedule}\n\n"
+        f"{cal_summary}\n\n"
+        "צור הודעת בוקר מסודרת וכרונולוגית של מה שיש לי היום בלבד.\n"
+        "- שעות מדויקות בסדר עולה\n"
+        "- הפרד בין סוגי אירועים (עבודה / לימודים / אחר)\n"
+        "- אם אין כלום היום כתוב את זה\n"
+        "- סיכום קצר בסוף\n"
+        "ענה בעברית בלבד, ללא מבוא מיותר."
+    )
+
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=1024,
+        system="אתה עוזר אישי שמכין תקציר יומי מסודר.",
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    body = f"בוקר טוב! הנה היום שלך:\n\n{response.content[0].text}"
+    twilio_client.messages.create(from_=TWILIO_FROM, to=MY_WHATSAPP, body=body)
+
 
 # ── Google Calendar helpers ──────────────────────────────────────────────────
 
@@ -540,7 +623,7 @@ def run_tool(name: str, inp: dict, user_phone: str) -> str:
 @app.on_event("startup")
 async def startup():
     scheduler.start()
-    pass  # startup: nothing extra needed
+    scheduler.add_job(send_morning_brief, "cron", hour=6, minute=0, timezone=ISRAEL_TZ)
 
 
 # ── Webhook ──────────────────────────────────────────────────────────────────
@@ -564,6 +647,27 @@ async def webhook(
     MediaContentType0: str = Form(None),
 ):
     user_phone = From.replace("whatsapp:", "")
+    body_stripped = Body.strip()
+
+    # ── Schedule commands ─────────────────────────────────────────────────────
+    if body_stripped.startswith("מערכת שעות:"):
+        content = body_stripped[len("מערכת שעות:"):].strip()
+        data = load_schedules()
+        data["מערכת_שעות"] = content
+        save_schedules(data)
+        resp = MessagingResponse()
+        resp.message("מערכת השעות נשמרה. כל יום ב-06:00 אשלח לך סיכום יומי.")
+        return PlainTextResponse(str(resp), media_type="application/xml")
+
+    if body_stripped.startswith("סידור עבודה:"):
+        content = body_stripped[len("סידור עבודה:"):].strip()
+        data = load_schedules()
+        data["סידור_עבודה"] = content
+        save_schedules(data)
+        resp = MessagingResponse()
+        resp.message("סידור העבודה נשמר.")
+        return PlainTextResponse(str(resp), media_type="application/xml")
+    # ─────────────────────────────────────────────────────────────────────────
 
     # ── Spotify artist selection ──────────────────────────────────────────────
     if user_phone in pending_spotify and Body.strip().isdigit():
@@ -590,12 +694,19 @@ async def webhook(
         conversations[From] = []
 
     now = datetime.now(ISRAEL_TZ).strftime("%d/%m/%Y %H:%M")
+    schedules = load_schedules()
+    schedule_context = ""
+    if schedules.get("מערכת_שעות") or schedules.get("סידור_עבודה"):
+        schedule_context = (
+            f"\nמערכת השעות הקבועה של אלרואי:\n{schedules.get('מערכת_שעות', 'לא הוגדרה')}"
+            f"\nסידור עבודה שבועי:\n{schedules.get('סידור_עבודה', 'לא הוגדר')}"
+        )
     system_prompt = (
         f"אתה סוכן אישי של אלרואי מאיר. ענה תמיד בעברית, בקצרה ולעניין. "
         f"יש לך כלים: חיפוש אינטרנט, תזכורות, ניהול משימות, יומן גוגל (צפייה ויצירת אירועים). "
         f"אתה יכול לראות תמונות ולקרוא קבצי PDF. "
         f"אתה יכול לשלוט על ספוטיפיי: לנגן, להשהות, לדלג, ולחפש שירים. "
-        f"השעה עכשיו: {now} (ישראל)."
+        f"השעה עכשיו: {now} (ישראל).{schedule_context}"
     )
 
     # Build user message content (text + optional media)
@@ -711,6 +822,13 @@ async def webhook(
     resp = MessagingResponse()
     resp.message(reply)
     return PlainTextResponse(str(resp), media_type="application/xml")
+
+
+@app.get("/morning-test")
+async def morning_test():
+    from fastapi.responses import JSONResponse
+    await send_morning_brief()
+    return JSONResponse({"status": "sent"})
 
 
 @app.get("/")
