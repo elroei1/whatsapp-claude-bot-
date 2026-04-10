@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Form
-from fastapi.responses import PlainTextResponse, RedirectResponse, HTMLResponse
+from fastapi.responses import PlainTextResponse, RedirectResponse, HTMLResponse, JSONResponse
 import anthropic
 import os
 import json
@@ -36,7 +36,7 @@ user_tasks = {}
 _oauth_flow = None
 pending_spotify = {}  # user_phone -> list of {name, artist, uri}
 
-DATA_DIR = "/data"
+DATA_DIR = "/data" if os.path.isdir("/data") else "/tmp"
 SCHEDULE_FILE = f"{DATA_DIR}/schedule.json"
 MY_WHATSAPP = os.environ.get("MY_WHATSAPP", "")
 DAY_NAMES = {0: "שני", 1: "שלישי", 2: "רביעי", 3: "חמישי", 4: "שישי", 5: "שבת", 6: "ראשון"}
@@ -826,9 +826,14 @@ async def webhook(
 
 @app.get("/morning-test")
 async def morning_test():
-    from fastapi.responses import JSONResponse
-    await send_morning_brief()
-    return JSONResponse({"status": "sent"})
+    import traceback
+    try:
+        if not MY_WHATSAPP:
+            return JSONResponse({"error": "MY_WHATSAPP env variable not set"}, status_code=400)
+        await send_morning_brief()
+        return JSONResponse({"status": "sent"})
+    except Exception as e:
+        return JSONResponse({"error": str(e), "trace": traceback.format_exc()}, status_code=500)
 
 
 @app.get("/")
