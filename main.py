@@ -38,7 +38,8 @@ pending_spotify = {}  # user_phone -> list of {name, artist, uri}
 
 DATA_DIR = "/data" if os.path.isdir("/data") else "/tmp"
 SCHEDULE_FILE = f"{DATA_DIR}/schedule.json"
-MY_WHATSAPP = os.environ.get("MY_WHATSAPP", "")
+_my_wa = os.environ.get("MY_WHATSAPP", "")
+MY_WHATSAPP = _my_wa if _my_wa.startswith("whatsapp:") else (f"whatsapp:{_my_wa}" if _my_wa else "")
 DAY_NAMES = {0: "שני", 1: "שלישי", 2: "רביעי", 3: "חמישי", 4: "שישי", 5: "שבת", 6: "ראשון"}
 os.makedirs(DATA_DIR, exist_ok=True)
 
