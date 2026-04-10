@@ -38,8 +38,7 @@ pending_spotify = {}  # user_phone -> list of {name, artist, uri}
 
 DATA_DIR = "/data" if os.path.isdir("/data") else "/tmp"
 SCHEDULE_FILE = f"{DATA_DIR}/schedule.json"
-_my_wa = os.environ.get("MY_WHATSAPP", "")
-MY_WHATSAPP = _my_wa if _my_wa.startswith("whatsapp:") else (f"whatsapp:{_my_wa}" if _my_wa else "")
+MY_WHATSAPP = os.environ.get("MY_WHATSAPP", "")
 DAY_NAMES = {0: "שני", 1: "שלישי", 2: "רביעי", 3: "חמישי", 4: "שישי", 5: "שבת", 6: "ראשון"}
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -56,8 +55,22 @@ def save_schedules(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+def get_owner_phone() -> str:
+    """Return the stored owner phone (whatsapp:+972...) or fallback to MY_WHATSAPP env."""
+    schedules = load_schedules()
+    stored = schedules.get("owner_phone", "")
+    if stored:
+        return stored
+    # fallback: env variable, add prefix if missing
+    env = MY_WHATSAPP
+    if env and not env.startswith("whatsapp:"):
+        env = f"whatsapp:{env}"
+    return env
+
+
 async def send_morning_brief():
-    if not MY_WHATSAPP:
+    target = get_owner_phone()
+    if not target:
         return
 
     schedules = load_schedules()
@@ -118,7 +131,7 @@ async def send_morning_brief():
     )
 
     body = f"בוקר טוב! הנה היום שלך:\n\n{response.content[0].text}"
-    twilio_client.messages.create(from_=TWILIO_FROM, to=MY_WHATSAPP, body=body)
+    twilio_client.messages.create(from_=TWILIO_FROM, to=target, body=body)
 
 
 # ── Google Calendar helpers ──────────────────────────────────────────────────
@@ -650,6 +663,13 @@ async def webhook(
     user_phone = From.replace("whatsapp:", "")
     body_stripped = Body.strip()
 
+    # ── Save owner phone on first contact ────────────────────────────────────
+    _sched_data = load_schedules()
+    if not _sched_data.get("owner_phone"):
+        _sched_data["owner_phone"] = From
+        save_schedules(_sched_data)
+    # ─────────────────────────────────────────────────────────────────────────
+
     # ── Schedule commands ─────────────────────────────────────────────────────
     if body_stripped.startswith("מערכת שעות:"):
         content = body_stripped[len("מערכת שעות:"):].strip()
@@ -828,11 +848,15 @@ async def webhook(
 @app.get("/morning-test")
 async def morning_test():
     import traceback
+    target = get_owner_phone()
+    if not target:
+        return JSONResponse(
+            {"error": "no phone stored yet — send any WhatsApp message to the bot first"},
+            status_code=400
+        )
     try:
-        if not MY_WHATSAPP:
-            return JSONResponse({"error": "MY_WHATSAPP env variable not set"}, status_code=400)
         await send_morning_brief()
-        return JSONResponse({"status": "sent"})
+        return JSONResponse({"status": "sent", "to": target})
     except Exception as e:
         return JSONResponse({"error": str(e), "trace": traceback.format_exc()}, status_code=500)
 
