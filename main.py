@@ -22,11 +22,13 @@ from googleapiclient.discovery import build
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 import openai
+from elevenlabs import ElevenLabs
 
 app = FastAPI()
 client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 twilio_client = TwilioClient(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
 openai_client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+elevenlabs_client = ElevenLabs(api_key=os.environ.get("ELEVENLABS_API_KEY", ""))
 scheduler = AsyncIOScheduler()
 
 TWILIO_FROM = "whatsapp:+14155238886"
@@ -662,16 +664,18 @@ async def transcribe_audio(url: str) -> str:
 
 
 def generate_voice_reply(text: str) -> str:
-    """Convert text to OGG voice file, save to /tmp, return filename."""
-    filename = f"{uuid.uuid4()}.ogg"
+    """Convert text to MP3 via ElevenLabs multilingual, save to /tmp, return filename."""
+    filename = f"{uuid.uuid4()}.mp3"
     path = f"/tmp/{filename}"
-    response = openai_client.audio.speech.create(
-        model="tts-1",
-        voice="fable",
-        input=text,
-        response_format="opus",
+    audio = elevenlabs_client.text_to_speech.convert(
+        text=text,
+        voice_id="pNInz6obpgDQGcFmaJgB",  # Adam — multilingual
+        model_id="eleven_multilingual_v2",
+        output_format="mp3_44100_128",
     )
-    response.stream_to_file(path)
+    with open(path, "wb") as f:
+        for chunk in audio:
+            f.write(chunk)
     return filename
 
 
@@ -891,7 +895,7 @@ async def webhook(
     conversations[From].append({"role": "assistant", "content": reply})
 
     # Voice response if original was a voice message
-    if is_voice and os.environ.get("OPENAI_API_KEY"):
+    if is_voice and os.environ.get("ELEVENLABS_API_KEY"):
         try:
             filename = generate_voice_reply(reply)
             audio_url = f"{BASE_URL}/audio/{filename}"
@@ -917,7 +921,7 @@ async def serve_audio(filename: str):
     path = f"/tmp/{filename}"
     if not os.path.exists(path):
         raise HTTPException(status_code=404)
-    return FileResponse(path, media_type="audio/ogg")
+    return FileResponse(path, media_type="audio/mpeg")
 
 
 @app.get("/morning-test")
