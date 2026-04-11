@@ -671,7 +671,7 @@ def generate_voice_reply(text: str) -> str:
     audio = elevenlabs_client.text_to_speech.convert(
         text=text,
         voice_id="EapdDtSsMC291mjfSNe7",  # Peter — multilingual
-        model_id="eleven_multilingual_v2",
+        model_id="eleven_v3",
         output_format="mp3_44100_128",
     )
     # Handle both bytes and generator responses
