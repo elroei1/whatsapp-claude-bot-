@@ -674,9 +674,13 @@ def generate_voice_reply(text: str) -> str:
         model_id="eleven_multilingual_v2",
         output_format="mp3_44100_128",
     )
+    # Handle both bytes and generator responses
+    if isinstance(audio, bytes):
+        audio_bytes = audio
+    else:
+        audio_bytes = b"".join(chunk for chunk in audio if isinstance(chunk, bytes))
     with open(path, "wb") as f:
-        for chunk in audio:
-            f.write(chunk)
+        f.write(audio_bytes)
     return filename
 
 
