@@ -669,7 +669,7 @@ def generate_voice_reply(text: str) -> str:
     path = f"/tmp/{filename}"
     audio = elevenlabs_client.text_to_speech.convert(
         text=text,
-        voice_id="pNInz6obpgDQGcFmaJgB",  # Adam — multilingual
+        voice_id="EapdDtSsMC291mjfSNe7",  # Peter — multilingual
         model_id="eleven_multilingual_v2",
         output_format="mp3_44100_128",
     )
