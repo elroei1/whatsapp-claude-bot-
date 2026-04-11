@@ -5,6 +5,8 @@ import os
 import json
 import base64
 import httpx
+import tempfile
+import uuid
 from datetime import datetime, timedelta
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client as TwilioClient
@@ -19,10 +21,12 @@ from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
+import openai
 
 app = FastAPI()
 client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 twilio_client = TwilioClient(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
+openai_client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
 scheduler = AsyncIOScheduler()
 
 TWILIO_FROM = "whatsapp:+14155238886"
@@ -632,6 +636,45 @@ def run_tool(name: str, inp: dict, user_phone: str) -> str:
     return "כלי לא מוכר"
 
 
+# ── Voice helpers ────────────────────────────────────────────────────────────
+
+BASE_URL = "https://web-production-d9ba5e.up.railway.app"
+
+async def transcribe_audio(url: str) -> str:
+    """Download Twilio voice message and transcribe with Whisper."""
+    auth = (os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
+    async with httpx.AsyncClient() as http:
+        resp = await http.get(url, auth=auth, follow_redirects=True)
+        resp.raise_for_status()
+    with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as f:
+        f.write(resp.content)
+        tmp_path = f.name
+    try:
+        with open(tmp_path, "rb") as f:
+            result = openai_client.audio.transcriptions.create(
+                model="whisper-1",
+                file=f,
+                language="he",
+            )
+        return result.text
+    finally:
+        os.unlink(tmp_path)
+
+
+def generate_voice_reply(text: str) -> str:
+    """Convert text to OGG voice file, save to /tmp, return filename."""
+    filename = f"{uuid.uuid4()}.ogg"
+    path = f"/tmp/{filename}"
+    response = openai_client.audio.speech.create(
+        model="tts-1",
+        voice="nova",
+        input=text,
+        response_format="opus",
+    )
+    response.stream_to_file(path)
+    return filename
+
+
 # ── App lifecycle ────────────────────────────────────────────────────────────
 
 @app.on_event("startup")
@@ -731,37 +774,47 @@ async def webhook(
     )
 
     # Build user message content (text + optional media)
+    is_voice = False
     if NumMedia > 0 and MediaUrl0:
-        try:
-            file_data, file_type = await fetch_media_as_base64(MediaUrl0)
-            user_text = Body if Body else None
+        content_type = (MediaContentType0 or "").lower()
+        if content_type.startswith("audio/"):
+            is_voice = True
+            try:
+                transcribed = await transcribe_audio(MediaUrl0)
+                user_content = f"[הודעה קולית]: {transcribed}" + (f" | {Body}" if Body else "")
+            except Exception as e:
+                user_content = f"לא הצלחתי לתמלל את ההודעה הקולית: {str(e)}"
+        else:
+            try:
+                file_data, file_type = await fetch_media_as_base64(MediaUrl0)
+                user_text = Body if Body else None
 
-            if file_type.startswith("image/"):
-                media_block = {
-                    "type": "image",
-                    "source": {"type": "base64", "media_type": file_type, "data": file_data},
-                }
-                default_text = "מה יש בתמונה?"
-            elif file_type == "application/pdf":
-                media_block = {
-                    "type": "document",
-                    "source": {"type": "base64", "media_type": "application/pdf", "data": file_data},
-                }
-                default_text = "תסכם את תוכן הקובץ."
-            else:
-                media_block = None
-                user_text = user_text or f"שלחת קובץ מסוג {file_type} — אני לא יכול לקרוא סוג קובץ זה כרגע."
+                if file_type.startswith("image/"):
+                    media_block = {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": file_type, "data": file_data},
+                    }
+                    default_text = "מה יש בתמונה?"
+                elif file_type == "application/pdf":
+                    media_block = {
+                        "type": "document",
+                        "source": {"type": "base64", "media_type": "application/pdf", "data": file_data},
+                    }
+                    default_text = "תסכם את תוכן הקובץ."
+                else:
+                    media_block = None
+                    user_text = user_text or f"שלחת קובץ מסוג {file_type} — אני לא יכול לקרוא סוג קובץ זה כרגע."
 
-            if media_block:
-                user_content = [
-                    media_block,
-                    {"type": "text", "text": user_text or default_text},
-                ]
-            else:
-                user_content = user_text
+                if media_block:
+                    user_content = [
+                        media_block,
+                        {"type": "text", "text": user_text or default_text},
+                    ]
+                else:
+                    user_content = user_text
 
-        except Exception as e:
-            user_content = f"שגיאה בטעינת הקובץ: {str(e)}"
+            except Exception as e:
+                user_content = f"שגיאה בטעינת הקובץ: {str(e)}"
     else:
         user_content = Body or "שלום"  # fallback for empty body
 
@@ -837,12 +890,34 @@ async def webhook(
 
     conversations[From].append({"role": "assistant", "content": reply})
 
+    # Voice response if original was a voice message
+    if is_voice and os.environ.get("OPENAI_API_KEY"):
+        try:
+            filename = generate_voice_reply(reply)
+            audio_url = f"{BASE_URL}/audio/{filename}"
+            resp = MessagingResponse()
+            msg = resp.message("")
+            msg.media(audio_url)
+            return PlainTextResponse(str(resp), media_type="application/xml")
+        except Exception:
+            pass  # fallback to text if TTS fails
+
     if len(reply) > 1500:
         reply = reply[:1497] + "..."
 
     resp = MessagingResponse()
     resp.message(reply)
     return PlainTextResponse(str(resp), media_type="application/xml")
+
+
+@app.get("/audio/{filename}")
+async def serve_audio(filename: str):
+    from fastapi import HTTPException
+    from fastapi.responses import FileResponse
+    path = f"/tmp/{filename}"
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404)
+    return FileResponse(path, media_type="audio/ogg")
 
 
 @app.get("/morning-test")

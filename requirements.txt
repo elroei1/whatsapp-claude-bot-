@@ -12,3 +12,4 @@ google-auth-oauthlib
 google-auth-httplib2
 httpx
 spotipy
+openai
