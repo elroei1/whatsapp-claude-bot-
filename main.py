@@ -982,6 +982,20 @@ async def serve_audio(filename: str):
     return FileResponse(path, media_type="audio/mpeg")
 
 
+@app.get("/voice-test")
+async def voice_test():
+    target = get_owner_phone()
+    if not target:
+        return JSONResponse({"error": "no phone stored"}, status_code=400)
+    try:
+        filename = generate_voice_reply("שלום אלרואי, זו הודעת בדיקה. אם אתה שומע אותי בבירור, הקול עובד מצוין!")
+        audio_url = f"{BASE_URL}/audio/{filename}"
+        twilio_client.messages.create(from_=TWILIO_FROM, to=target, media_url=[audio_url])
+        return JSONResponse({"status": "sent"})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.get("/morning-test")
 async def morning_test():
     import traceback
