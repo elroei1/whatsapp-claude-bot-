@@ -3,6 +3,7 @@ from fastapi.responses import PlainTextResponse, RedirectResponse, HTMLResponse,
 import anthropic
 import os
 import json
+import asyncio
 import base64
 import httpx
 import tempfile
@@ -679,6 +680,79 @@ def generate_voice_reply(text: str) -> str:
     return filename
 
 
+async def process_voice_async(from_number: str, media_url: str, body: str, system_prompt: str):
+    """Process voice message in background and send reply via Twilio REST API."""
+    import sys
+    try:
+        try:
+            transcribed = await transcribe_audio(media_url)
+            user_content = f"[הודעה קולית]: {transcribed}" + (f" | {body}" if body else "")
+        except Exception as e:
+            user_content = f"לא הצלחתי לתמלל: {str(e)}"
+
+        if from_number not in conversations:
+            conversations[from_number] = []
+        conversations[from_number].append({"role": "user", "content": user_content})
+        if len(conversations[from_number]) > 20:
+            conversations[from_number] = conversations[from_number][-20:]
+
+        history = [{"role": m["role"], "content": m["content"]}
+                   for m in conversations[from_number][:-1]
+                   if isinstance(m.get("content"), str) and m.get("content")]
+        while history and history[0]["role"] == "assistant":
+            history.pop(0)
+        messages = history + [{"role": "user", "content": user_content}]
+
+        user_phone = from_number.replace("whatsapp:", "")
+        reply = ""
+        for _ in range(4):
+            response = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=1024,
+                system=system_prompt,
+                tools=tools,
+                messages=messages,
+            )
+            if response.stop_reason == "end_turn":
+                reply = next((b.text for b in response.content if hasattr(b, "text")), "")
+                break
+            if response.stop_reason == "tool_use":
+                messages.append({"role": "assistant", "content": response.content})
+                tool_results = [
+                    {"type": "tool_result", "tool_use_id": b.id, "content": run_tool(b.name, b.input, user_phone)}
+                    for b in response.content if b.type == "tool_use"
+                ]
+                messages.append({"role": "user", "content": tool_results})
+            else:
+                break
+
+        if not reply:
+            reply = "מצטער, משהו השתבש."
+        conversations[from_number].append({"role": "assistant", "content": reply})
+
+        # Try voice reply
+        if os.environ.get("ELEVENLABS_API_KEY"):
+            try:
+                filename = generate_voice_reply(reply)
+                audio_url = f"{BASE_URL}/audio/{filename}"
+                twilio_client.messages.create(from_=TWILIO_FROM, to=from_number, media_url=[audio_url])
+                return
+            except Exception as e:
+                print(f"[TTS ERROR] {e}", file=sys.stderr, flush=True)
+
+        # Fallback: text
+        text = reply[:1497] + "..." if len(reply) > 1500 else reply
+        twilio_client.messages.create(from_=TWILIO_FROM, to=from_number, body=text)
+
+    except Exception:
+        import traceback
+        print(f"[VOICE BG ERROR] {traceback.format_exc()}", file=sys.stderr, flush=True)
+        try:
+            twilio_client.messages.create(from_=TWILIO_FROM, to=from_number, body="שגיאה בעיבוד ההודעה הקולית.")
+        except Exception:
+            pass
+
+
 # ── App lifecycle ────────────────────────────────────────────────────────────
 
 @app.on_event("startup")
@@ -778,16 +852,12 @@ async def webhook(
     )
 
     # Build user message content (text + optional media)
-    is_voice = False
     if NumMedia > 0 and MediaUrl0:
         content_type = (MediaContentType0 or "").lower()
         if content_type.startswith("audio/"):
-            is_voice = True
-            try:
-                transcribed = await transcribe_audio(MediaUrl0)
-                user_content = f"[הודעה קולית]: {transcribed}" + (f" | {Body}" if Body else "")
-            except Exception as e:
-                user_content = f"לא הצלחתי לתמלל את ההודעה הקולית: {str(e)}"
+            # Return immediately — process voice in background to avoid Twilio timeout
+            asyncio.create_task(process_voice_async(From, MediaUrl0, Body, system_prompt))
+            return PlainTextResponse(str(MessagingResponse()), media_type="application/xml")
         else:
             try:
                 file_data, file_type = await fetch_media_as_base64(MediaUrl0)
@@ -893,18 +963,6 @@ async def webhook(
         reply = "מצטער, משהו השתבש. נסה שוב."
 
     conversations[From].append({"role": "assistant", "content": reply})
-
-    # Voice response if original was a voice message
-    if is_voice and os.environ.get("ELEVENLABS_API_KEY"):
-        try:
-            filename = generate_voice_reply(reply)
-            audio_url = f"{BASE_URL}/audio/{filename}"
-            resp = MessagingResponse()
-            msg = resp.message("")
-            msg.media(audio_url)
-            return PlainTextResponse(str(resp), media_type="application/xml")
-        except Exception:
-            pass  # fallback to text if TTS fails
 
     if len(reply) > 1500:
         reply = reply[:1497] + "..."
