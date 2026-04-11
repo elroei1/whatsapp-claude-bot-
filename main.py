@@ -667,7 +667,7 @@ def generate_voice_reply(text: str) -> str:
     path = f"/tmp/{filename}"
     response = openai_client.audio.speech.create(
         model="tts-1",
-        voice="nova",
+        voice="fable",
         input=text,
         response_format="opus",
     )
