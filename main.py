@@ -815,6 +815,20 @@ async def webhook(
         return PlainTextResponse(str(resp), media_type="application/xml")
     # ─────────────────────────────────────────────────────────────────────────
 
+    # ── Slash commands ───────────────────────────────────────────────────────
+    force_voice = False
+    response_mode = "normal"
+    if body_stripped.startswith("/record"):
+        force_voice = True
+        body_stripped = body_stripped[len("/record"):].strip()
+    elif body_stripped.startswith("/clear"):
+        response_mode = "brief"
+        body_stripped = body_stripped[len("/clear"):].strip()
+    elif body_stripped.startswith("/detail"):
+        response_mode = "detail"
+        body_stripped = body_stripped[len("/detail"):].strip()
+    # ─────────────────────────────────────────────────────────────────────────
+
     # ── Spotify artist selection ──────────────────────────────────────────────
     if user_phone in pending_spotify and Body.strip().isdigit():
         idx = int(Body.strip()) - 1
@@ -847,12 +861,17 @@ async def webhook(
             f"\nמערכת השעות הקבועה של אלרואי:\n{schedules.get('מערכת_שעות', 'לא הוגדרה')}"
             f"\nסידור עבודה שבועי:\n{schedules.get('סידור_עבודה', 'לא הוגדר')}"
         )
+    mode_instruction = ""
+    if response_mode == "brief":
+        mode_instruction = " ענה בתמצית — משפט אחד עד שלושה לכל היותר, ללא הסברים מיותרים."
+    elif response_mode == "detail":
+        mode_instruction = " ענה בפירוט רב ומקיף ככל האפשר — הרחב, הסבר לעומק, תן דוגמאות."
     system_prompt = (
         f"אתה סוכן אישי של אלרואי מאיר. ענה תמיד בעברית, בקצרה ולעניין. "
         f"יש לך כלים: חיפוש אינטרנט, תזכורות, ניהול משימות, יומן גוגל (צפייה ויצירת אירועים). "
         f"אתה יכול לראות תמונות ולקרוא קבצי PDF. "
         f"אתה יכול לשלוט על ספוטיפיי: לנגן, להשהות, לדלג, ולחפש שירים. "
-        f"השעה עכשיו: {now} (ישראל).{schedule_context}"
+        f"השעה עכשיו: {now} (ישראל).{schedule_context}{mode_instruction}"
     )
 
     # Build user message content (text + optional media)
@@ -894,7 +913,7 @@ async def webhook(
             except Exception as e:
                 user_content = f"שגיאה בטעינת הקובץ: {str(e)}"
     else:
-        user_content = Body or "שלום"  # fallback for empty body
+        user_content = body_stripped or "שלום"  # fallback for empty body
 
     # Store only text in history (images/PDFs are too large to keep)
     if isinstance(user_content, list):
@@ -967,6 +986,22 @@ async def webhook(
         reply = "מצטער, משהו השתבש. נסה שוב."
 
     conversations[From].append({"role": "assistant", "content": reply})
+
+    # /record — send voice response via Twilio REST and return empty TwiML
+    if force_voice and os.environ.get("ELEVENLABS_API_KEY"):
+        async def _send_voice():
+            try:
+                filename = generate_voice_reply(reply)
+                twilio_client.messages.create(
+                    from_=TWILIO_FROM, to=From,
+                    media_url=[f"{BASE_URL}/audio/{filename}"]
+                )
+            except Exception as e:
+                import sys
+                print(f"[RECORD ERROR] {e}", file=sys.stderr, flush=True)
+                twilio_client.messages.create(from_=TWILIO_FROM, to=From, body=reply)
+        asyncio.create_task(_send_voice())
+        return PlainTextResponse(str(MessagingResponse()), media_type="application/xml")
 
     if len(reply) > 1500:
         reply = reply[:1497] + "..."
