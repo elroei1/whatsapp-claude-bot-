@@ -861,17 +861,12 @@ async def webhook(
             f"\nמערכת השעות הקבועה של אלרואי:\n{schedules.get('מערכת_שעות', 'לא הוגדרה')}"
             f"\nסידור עבודה שבועי:\n{schedules.get('סידור_עבודה', 'לא הוגדר')}"
         )
-    mode_instruction = ""
-    if response_mode == "brief":
-        mode_instruction = " ענה בתמצית — משפט אחד עד שלושה לכל היותר, ללא הסברים מיותרים."
-    elif response_mode == "detail":
-        mode_instruction = " ענה בפירוט רב ומקיף ככל האפשר — הרחב, הסבר לעומק, תן דוגמאות."
     system_prompt = (
         f"אתה סוכן אישי של אלרואי מאיר. ענה תמיד בעברית, בקצרה ולעניין. "
         f"יש לך כלים: חיפוש אינטרנט, תזכורות, ניהול משימות, יומן גוגל (צפייה ויצירת אירועים). "
         f"אתה יכול לראות תמונות ולקרוא קבצי PDF. "
         f"אתה יכול לשלוט על ספוטיפיי: לנגן, להשהות, לדלג, ולחפש שירים. "
-        f"השעה עכשיו: {now} (ישראל).{schedule_context}{mode_instruction}"
+        f"השעה עכשיו: {now} (ישראל).{schedule_context}"
     )
 
     # Build user message content (text + optional media)
@@ -913,7 +908,13 @@ async def webhook(
             except Exception as e:
                 user_content = f"שגיאה בטעינת הקובץ: {str(e)}"
     else:
-        user_content = body_stripped or "שלום"  # fallback for empty body
+        base_text = body_stripped or "שלום"
+        if response_mode == "brief":
+            user_content = f"{base_text}\n\n[חובה: ענה בתמצית — משפט אחד עד שלושה בלבד]"
+        elif response_mode == "detail":
+            user_content = f"{base_text}\n\n[חובה: ענה בפירוט מלא ומקיף — הרחב, הסבר לעומק, תן דוגמאות, אל תקצר]"
+        else:
+            user_content = base_text
 
     # Store only text in history (images/PDFs are too large to keep)
     if isinstance(user_content, list):
