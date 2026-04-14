@@ -685,26 +685,48 @@ def cancel_reminder_fn(user_phone: str, reminder_id: str) -> str:
 
 
 def set_phone_alarm_fn(time_str: str, label: str = "שעון מעורר") -> str:
-    """Trigger a native iOS alarm via Pushcut → Shortcut → Clock app."""
-    webhook_url = os.environ.get("PUSHCUT_WEBHOOK_URL")
-    if not webhook_url:
-        return "PUSHCUT_WEBHOOK_URL לא מוגדר ב-Railway."
+    """Send ntfy notification with a one-tap SET_ALARM Android intent button."""
+    ntfy_topic = os.environ.get("NTFY_TOPIC")
+    if not ntfy_topic:
+        return "NTFY_TOPIC לא מוגדר ב-Railway."
     try:
+        parts = time_str.strip().split(":")
+        hour = int(parts[0])
+        minute = int(parts[1]) if len(parts) > 1 else 0
+
+        # Android intent URI — fires SET_ALARM silently (SKIP_UI=true)
+        intent_uri = (
+            f"intent:#Intent;"
+            f"action=android.intent.action.SET_ALARM;"
+            f"i.android.intent.extra.HOUR={hour};"
+            f"i.android.intent.extra.MINUTES={minute};"
+            f"S.android.intent.extra.MESSAGE={label};"
+            f"b.android.intent.extra.SKIP_UI=true;"
+            f"end"
+        )
+
         import urllib.request
         payload = json.dumps({
-            "title": f"⏰ {label}",
-            "text": f"קובע שעון מעורר ל-{time_str}",
-            "input": time_str,
+            "topic": ntfy_topic,
+            "title": f"⏰ שעון מעורר ל-{time_str}",
+            "message": label,
+            "priority": 4,
+            "actions": [{
+                "action": "view",
+                "label": "קבע שעון מעורר ✅",
+                "url": intent_uri,
+                "clear": True,
+            }],
         }).encode()
         req = urllib.request.Request(
-            webhook_url,
+            "https://ntfy.sh",
             data=payload,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as r:
             r.read()
-        return f"⏰ שעון מעורר נשלח לטלפון ל-{time_str} ✅"
+        return f"⏰ שעון מעורר ל-{time_str} נשלח לטלפון — לחץ על הכפתור בהתראה כדי לקבוע ✅"
     except Exception as e:
         return f"שגיאה: {str(e)}"
 
