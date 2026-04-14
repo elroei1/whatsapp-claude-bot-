@@ -13,6 +13,7 @@ from twilio.twiml.messaging_response import MessagingResponse
 from twilio.rest import Client as TwilioClient
 from tavily import TavilyClient
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.triggers.date import DateTrigger
 import pytz
 
@@ -30,7 +31,9 @@ client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 twilio_client = TwilioClient(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"])
 openai_client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
 elevenlabs_client = ElevenLabs(api_key=os.environ.get("ELEVENLABS_API_KEY", ""))
-scheduler = AsyncIOScheduler()
+scheduler = AsyncIOScheduler(
+    jobstores={"default": SQLAlchemyJobStore(url="sqlite:///reminders.db")}
+)
 
 TWILIO_FROM = "whatsapp:+14155238886"
 ISRAEL_TZ = pytz.timezone("Asia/Jerusalem")
@@ -443,7 +446,7 @@ tools = [
     },
     {
         "name": "set_reminder",
-        "description": "קביעת תזכורת שתישלח כהודעת וואטסאפ בשעה מסוימת.",
+        "description": "קביעת התראה/אזעקה שתישלח כהודעת וואטסאפ בשעה מסוימת. מחזיר מזהה התראה.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -451,9 +454,25 @@ tools = [
                     "type": "string",
                     "description": "תאריך ושעה בפורמט ISO (YYYY-MM-DDTHH:MM:SS) בשעון ישראל"
                 },
-                "message": {"type": "string", "description": "תוכן התזכורת"}
+                "message": {"type": "string", "description": "תוכן ההתראה"}
             },
             "required": ["datetime_str", "message"]
+        }
+    },
+    {
+        "name": "list_reminders",
+        "description": "הצגת כל ההתראות הפעילות שנקבעו.",
+        "input_schema": {"type": "object", "properties": {}, "required": []}
+    },
+    {
+        "name": "cancel_reminder",
+        "description": "ביטול התראה קיימת לפי מזהה (8 תווים ראשונים שהוחזרו בעת הקביעה).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "reminder_id": {"type": "string", "description": "מזהה ההתראה (8 תווים)"}
+            },
+            "required": ["reminder_id"]
         }
     },
     {
@@ -598,7 +617,7 @@ async def send_reminder_msg(user_phone: str, message: str):
     twilio_client.messages.create(
         from_=TWILIO_FROM,
         to=f"whatsapp:{user_phone}",
-        body=f"⏰ תזכורת: {message}"
+        body=f"⏰ {message}"
     )
 
 
@@ -607,14 +626,40 @@ def set_reminder_fn(user_phone: str, datetime_str: str, message: str) -> str:
         dt = datetime.fromisoformat(datetime_str)
         if dt.tzinfo is None:
             dt = ISRAEL_TZ.localize(dt)
-        scheduler.add_job(
+        job = scheduler.add_job(
             send_reminder_msg,
             DateTrigger(run_date=dt),
-            args=[user_phone, message]
+            args=[user_phone, message],
+            id=None,  # auto-generate
+            replace_existing=False,
         )
-        return f"תזכורת נקבעה ל-{dt.strftime('%d/%m/%Y %H:%M')} ✅"
+        return f"⏰ התראה נקבעה ל-{dt.strftime('%d/%m/%Y %H:%M')} (מזהה: {job.id[:8]}) ✅"
     except Exception as e:
         return f"שגיאה: {str(e)}"
+
+
+def list_reminders_fn(user_phone: str) -> str:
+    jobs = scheduler.get_jobs()
+    user_jobs = [j for j in jobs if j.args and j.args[0] == user_phone]
+    if not user_jobs:
+        return "אין התראות מתוכננות."
+    lines = ["📋 התראות מתוכננות:"]
+    for j in user_jobs:
+        run_time = j.next_run_time.astimezone(ISRAEL_TZ).strftime("%d/%m/%Y %H:%M") if j.next_run_time else "לא ידוע"
+        msg = j.args[1] if len(j.args) > 1 else ""
+        lines.append(f"• {run_time} — {msg} (מזהה: {j.id[:8]})")
+    return "\n".join(lines)
+
+
+def cancel_reminder_fn(user_phone: str, reminder_id: str) -> str:
+    jobs = scheduler.get_jobs()
+    # Match by short ID prefix (first 8 chars) and ownership
+    for j in jobs:
+        if j.id.startswith(reminder_id) and j.args and j.args[0] == user_phone:
+            msg = j.args[1] if len(j.args) > 1 else ""
+            j.remove()
+            return f"התראה '{msg}' בוטלה ✅"
+    return f"לא נמצאה התראה עם מזהה {reminder_id}."
 
 
 def run_tool(name: str, inp: dict, user_phone: str) -> str:
@@ -622,6 +667,10 @@ def run_tool(name: str, inp: dict, user_phone: str) -> str:
         return search_web(inp["query"])
     elif name == "set_reminder":
         return set_reminder_fn(user_phone, inp["datetime_str"], inp["message"])
+    elif name == "list_reminders":
+        return list_reminders_fn(user_phone)
+    elif name == "cancel_reminder":
+        return cancel_reminder_fn(user_phone, inp["reminder_id"])
     elif name == "manage_tasks":
         return manage_tasks_fn(user_phone, inp["action"], inp.get("task"), inp.get("task_id"))
     elif name == "list_calendar_events":
@@ -863,7 +912,9 @@ async def webhook(
         )
     system_prompt = (
         f"אתה סוכן אישי של אלרואי מאיר. ענה תמיד בעברית, בקצרה ולעניין. "
-        f"יש לך כלים: חיפוש אינטרנט, תזכורות, ניהול משימות, יומן גוגל (צפייה ויצירת אירועים). "
+        f"יש לך כלים: חיפוש אינטרנט, ניהול משימות, יומן גוגל (צפייה ויצירת אירועים). "
+        f"אתה יכול לקבוע התראות/אזעקות (set_reminder) שישלחו הודעת וואטסאפ בשעה המבוקשת, "
+        f"לראות התראות קיימות (list_reminders), ולבטל התראה (cancel_reminder). "
         f"אתה יכול לראות תמונות ולקרוא קבצי PDF. "
         f"אתה יכול לשלוט על ספוטיפיי: לנגן, להשהות, לדלג, ולחפש שירים. "
         f"השעה עכשיו: {now} (ישראל).{schedule_context}"

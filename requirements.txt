@@ -6,6 +6,7 @@ python-multipart
 h11==0.14.0
 tavily-python
 apscheduler
+sqlalchemy
 pytz
 google-api-python-client
 google-auth-oauthlib
