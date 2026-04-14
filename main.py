@@ -476,6 +476,28 @@ tools = [
         }
     },
     {
+        "name": "set_phone_alarm",
+        "description": (
+            "קביעת שעון מעורר אמיתי בטלפון (אפליקציית שעון של iOS) — מצלצל בקול גם כשהטלפון על שקט. "
+            "השתמש בכלי הזה כאשר המשתמש מבקש 'להעיר אותו', 'לקבוע שעון מעורר', 'אזעקה'. "
+            "לתזכורות שהן הודעת וואטסאפ בלבד — השתמש ב-set_reminder."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "time_str": {
+                    "type": "string",
+                    "description": "שעת ההשכמה בפורמט HH:MM (24 שעות), למשל '07:30'"
+                },
+                "label": {
+                    "type": "string",
+                    "description": "תווית השעון המעורר (אופציונלי), למשל 'השכמה לעבודה'"
+                }
+            },
+            "required": ["time_str"]
+        }
+    },
+    {
         "name": "manage_tasks",
         "description": "ניהול רשימת משימות — הוספה, צפייה, סימון כהושלם, מחיקה.",
         "input_schema": {
@@ -662,6 +684,31 @@ def cancel_reminder_fn(user_phone: str, reminder_id: str) -> str:
     return f"לא נמצאה התראה עם מזהה {reminder_id}."
 
 
+def set_phone_alarm_fn(time_str: str, label: str = "שעון מעורר") -> str:
+    """Trigger a native iOS alarm via Pushcut → Shortcut → Clock app."""
+    webhook_url = os.environ.get("PUSHCUT_WEBHOOK_URL")
+    if not webhook_url:
+        return "PUSHCUT_WEBHOOK_URL לא מוגדר ב-Railway."
+    try:
+        import urllib.request
+        payload = json.dumps({
+            "title": f"⏰ {label}",
+            "text": f"קובע שעון מעורר ל-{time_str}",
+            "input": time_str,
+        }).encode()
+        req = urllib.request.Request(
+            webhook_url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            r.read()
+        return f"⏰ שעון מעורר נשלח לטלפון ל-{time_str} ✅"
+    except Exception as e:
+        return f"שגיאה: {str(e)}"
+
+
 def run_tool(name: str, inp: dict, user_phone: str) -> str:
     if name == "search_web":
         return search_web(inp["query"])
@@ -671,6 +718,8 @@ def run_tool(name: str, inp: dict, user_phone: str) -> str:
         return list_reminders_fn(user_phone)
     elif name == "cancel_reminder":
         return cancel_reminder_fn(user_phone, inp["reminder_id"])
+    elif name == "set_phone_alarm":
+        return set_phone_alarm_fn(inp["time_str"], inp.get("label", "שעון מעורר"))
     elif name == "manage_tasks":
         return manage_tasks_fn(user_phone, inp["action"], inp.get("task"), inp.get("task_id"))
     elif name == "list_calendar_events":
@@ -913,8 +962,10 @@ async def webhook(
     system_prompt = (
         f"אתה סוכן אישי של אלרואי מאיר. ענה תמיד בעברית, בקצרה ולעניין. "
         f"יש לך כלים: חיפוש אינטרנט, ניהול משימות, יומן גוגל (צפייה ויצירת אירועים). "
-        f"אתה יכול לקבוע התראות/אזעקות (set_reminder) שישלחו הודעת וואטסאפ בשעה המבוקשת, "
-        f"לראות התראות קיימות (list_reminders), ולבטל התראה (cancel_reminder). "
+        f"שעונים מעוררים ותזכורות — שים לב להבדל: "
+        f"  • set_phone_alarm — שעון מעורר אמיתי בטלפון (אפליקציית שעון של iOS), מצלצל בקול גם על שקט. השתמש כשמבקשים 'להעיר אותי', 'שעון מעורר', 'אזעקה'. "
+        f"  • set_reminder — שולח הודעת וואטסאפ בשעה מסוימת. לתזכורות שאינן השכמה. "
+        f"  • list_reminders / cancel_reminder — לניהול תזכורות וואטסאפ. "
         f"אתה יכול לראות תמונות ולקרוא קבצי PDF. "
         f"אתה יכול לשלוט על ספוטיפיי: לנגן, להשהות, לדלג, ולחפש שירים. "
         f"השעה עכשיו: {now} (ישראל).{schedule_context}"
